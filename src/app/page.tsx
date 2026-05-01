@@ -2,17 +2,54 @@
 
 import Image from 'next/image';
 import { useRef, useState, useEffect } from 'react';
-import { useAccount, useDisconnect, useConnections, useConfig } from 'wagmi';
+import { useAccount, useDisconnect } from 'wagmi';
 import { useConnectModal } from '@rainbow-me/rainbowkit';
+import { usePortfolio } from '@/hooks/usePortfolio';
+import type { TokenHolding } from '@/types/portfolio';
+
+const CHAIN_BADGE: Record<string, string> = {
+  Ethereum: 'bg-zinc-700/60 text-zinc-300',
+  Polygon:  'bg-purple-900/50 text-purple-300',
+  Arbitrum: 'bg-sky-900/50 text-sky-300',
+  Optimism: 'bg-red-900/50 text-red-300',
+  Base:     'bg-indigo-900/50 text-indigo-300',
+};
+
+function fmtUsd(value: number | null): string {
+  if (value === null) return '—';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+}
+
+function HoldingRow({ holding }: { holding: TokenHolding }) {
+  return (
+    <div className="flex items-center justify-between px-5 py-3.5 border-b border-border last:border-0 hover:bg-surface-elevated transition-colors">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded-md ${CHAIN_BADGE[holding.chain] ?? 'bg-surface-elevated text-muted'}`}>
+          {holding.chain}
+        </span>
+        <div className="min-w-0">
+          <span className="text-sm font-medium text-foreground">{holding.symbol}</span>
+          <span className="text-xs text-muted ml-2 hidden sm:inline">{holding.name}</span>
+        </div>
+      </div>
+      <div className="text-right shrink-0 ml-4">
+        <div className="text-sm text-foreground tabular-nums">
+          {holding.balance} <span className="text-muted">{holding.symbol}</span>
+        </div>
+        <div className="text-xs text-muted">{fmtUsd(holding.usdValue)}</div>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
-  const { isConnected, address } = useAccount();
+  const { isConnected, address, connector } = useAccount();
   const { openConnectModal } = useConnectModal();
   const { disconnect } = useDisconnect();
-  const config = useConfig();
-  const connections = useConnections();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const { data, isLoading, isError, error } = usePortfolio();
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
@@ -33,26 +70,17 @@ export default function Home() {
   }
 
   function handleDisconnect() {
-    const connection = connections[0];
-    if (!connection) return;
-
-    // Match the serialized state connector to the live instance (which has methods).
-    // The UID may be stale (e.g. config reloaded) — guard explicitly so we never
-    // pass `undefined` and silently fall back to wagmi's broken internal lookup.
-    const liveConnector = config.connectors.find((c) => c.uid === connection.connector.uid);
-    if (!liveConnector) {
-      console.error('Disconnect error: no live connector found for uid', connection.connector.uid);
-      return;
-    }
-
-    disconnect({ connector: liveConnector }, {
-      onError: (error) => console.error('Disconnect error:', error),
+    disconnect(connector ? { connector } : undefined, {
+      onError: (err) => console.error('Disconnect error:', err),
     });
     setMenuOpen(false);
   }
 
+  const uniqueChains = data ? new Set(data.holdings.map(h => h.chain)).size : 0;
+  const pricedCount  = data ? data.holdings.filter(h => h.usdValue !== null).length : 0;
+
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col items-center">
+    <div className="min-h-screen bg-hero-glow flex flex-col items-center">
       {/* Spacer: shrinks from viewport center to top padding when connected */}
       <div
         style={{
@@ -65,20 +93,20 @@ export default function Home() {
       <div ref={menuRef} className="relative shrink-0">
         <button
           onClick={handleButtonClick}
-          className="w-16 h-16 rounded-full bg-orange-500 hover:bg-orange-400 active:bg-orange-600 transition-colors cursor-pointer overflow-hidden"
+          className="btn-primary glow-oracle w-16 h-16 rounded-full cursor-pointer overflow-hidden"
           aria-label={isConnected ? 'Wallet options' : 'Connect wallet'}
         >
           <Image src="/logo.png" alt="" width={64} height={64} unoptimized loading='eager' />
         </button>
 
         {menuOpen && isConnected && (
-          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-3 min-w-48 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden z-50">
-            <div className="px-4 py-3 text-xs text-zinc-500 border-b border-zinc-800 font-mono tracking-wide">
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-3 min-w-48 bg-surface border border-border-accent rounded-xl shadow-2xl overflow-hidden z-50">
+            <div className="px-4 py-3 text-xs text-muted border-b border-border font-mono tracking-wide">
               {address?.slice(0, 6)}…{address?.slice(-4)}
             </div>
             <button
               onClick={handleDisconnect}
-              className="w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+              className="w-full text-left px-4 py-3 text-sm text-loss hover:bg-surface-elevated transition-colors cursor-pointer"
             >
               Disconnect
             </button>
@@ -88,13 +116,68 @@ export default function Home() {
 
       {isConnected && (
         <div className="analytics-enter w-full max-w-6xl px-6 mt-12 pb-16 flex flex-col gap-5">
-          <div className="h-32 rounded-2xl bg-zinc-900 border border-zinc-800/60" />
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="h-28 rounded-2xl bg-zinc-900 border border-zinc-800/60" />
-            <div className="h-28 rounded-2xl bg-zinc-900 border border-zinc-800/60" />
-            <div className="h-28 rounded-2xl bg-zinc-900 border border-zinc-800/60" />
+
+          {/* Total portfolio value */}
+          <div className={`h-32 rounded-2xl bg-surface border border-border-accent flex items-center px-8 ${isLoading ? 'animate-pulse' : ''}`}>
+            {data && (
+              <div>
+                <div className="text-3xl font-semibold text-foreground tabular-nums">
+                  {fmtUsd(data.totalUsdValue)}
+                </div>
+                <div className="text-sm text-muted mt-1.5">
+                  {data.holdingCount} assets · {uniqueChains} {uniqueChains === 1 ? 'chain' : 'chains'}
+                </div>
+              </div>
+            )}
+            {isError && (
+              <p className="text-sm text-loss">{error?.message ?? 'Failed to load portfolio'}</p>
+            )}
           </div>
-          <div className="h-64 rounded-2xl bg-zinc-900 border border-zinc-800/60" />
+
+          {/* Stat cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {([
+              { label: 'Assets',        value: data?.holdingCount.toString() ?? '—', sub: 'total holdings'        },
+              { label: 'Active chains', value: data ? uniqueChains.toString() : '—', sub: 'of 5 tracked'          },
+              { label: 'Priced',        value: data ? pricedCount.toString()  : '—', sub: `of ${data?.holdingCount ?? '—'} with USD value` },
+            ] as const).map(({ label, value, sub }) => (
+              <div
+                key={label}
+                className={`h-28 rounded-2xl bg-surface border border-border-accent flex flex-col justify-center px-6 ${isLoading ? 'animate-pulse' : ''}`}
+              >
+                {(data || isError) && (
+                  <>
+                    <div className="text-xs text-muted mb-1">{label}</div>
+                    <div className="text-2xl font-semibold text-foreground tabular-nums">{value}</div>
+                    <div className="text-xs text-muted mt-0.5">{sub}</div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Holdings list */}
+          <div className={`rounded-2xl bg-surface border border-border-accent overflow-hidden ${isLoading ? 'animate-pulse' : ''}`}>
+            {isLoading && <div className="h-64" />}
+            {isError && (
+              <div className="flex items-center justify-center h-32 text-sm text-loss">
+                {error?.message ?? 'Failed to load holdings'}
+              </div>
+            )}
+            {data && data.holdings.length === 0 && (
+              <div className="flex items-center justify-center h-32 text-sm text-muted">
+                No token holdings found
+              </div>
+            )}
+            {data && data.holdings.length > 0 && (
+              <div className="max-h-[420px] overflow-y-auto">
+                {data.holdings.map((h, i) => (
+                  <HoldingRow key={`${h.chainId}-${h.contractAddress ?? 'native'}-${i}`} holding={h} />
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
       )}
     </div>

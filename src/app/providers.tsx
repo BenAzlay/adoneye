@@ -17,7 +17,7 @@ import {
   injectedWallet,
 } from '@rainbow-me/rainbowkit/wallets';
 import { createConfig, WagmiProvider } from 'wagmi';
-import { mainnet } from 'wagmi/chains';
+import { mainnet, polygon, arbitrum, optimism, base } from 'wagmi/chains';
 import { http } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -45,8 +45,14 @@ const connectors = connectorsForWallets(
 
 const wagmiConfig = createConfig({
   connectors,
-  chains: [mainnet],
-  transports: { [mainnet.id]: http('https://cloudflare-eth.com') },
+  chains: [mainnet, polygon, arbitrum, optimism, base],
+  transports: {
+    [mainnet.id]:   http('https://cloudflare-eth.com'),
+    [polygon.id]:   http('https://polygon-rpc.com'),
+    [arbitrum.id]:  http('https://arb1.arbitrum.io/rpc'),
+    [optimism.id]:  http('https://mainnet.optimism.io'),
+    [base.id]:      http('https://mainnet.base.org'),
+  },
 });
 
 export function Providers({ children }: { children: React.ReactNode }) {
