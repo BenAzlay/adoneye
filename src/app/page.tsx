@@ -43,9 +43,9 @@ function HoldingRow({ holding }: { holding: TokenHolding }) {
 }
 
 export default function Home() {
-  const { isConnected, address, connector } = useAccount();
+  const { isConnected, address, connector: activeConnector } = useAccount();
   const { openConnectModal } = useConnectModal();
-  const { disconnect } = useDisconnect();
+  const disconnect = useDisconnect();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -70,9 +70,7 @@ export default function Home() {
   }
 
   function handleDisconnect() {
-    disconnect(connector ? { connector } : undefined, {
-      onError: (err) => console.error('Disconnect error:', err),
-    });
+    disconnect.disconnect()
     setMenuOpen(false);
   }
 
@@ -81,22 +79,40 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-hero-glow flex flex-col items-center">
-      {/* Spacer: shrinks from viewport center to top padding when connected */}
+      {/* Spacer: shrinks from viewport center to top padding when connected.
+          calc(50vh - 56px) keeps the message+button group visually centered. */}
       <div
         style={{
-          height: isConnected ? '64px' : 'calc(50vh - 32px)',
+          height: isConnected ? '64px' : 'calc(50vh - 72px)',
           transition: 'height 0.6s cubic-bezier(0.4, 0, 0.2, 1)',
           flexShrink: 0,
         }}
       />
 
+      {/* Tagline — only in disconnected state */}
+      {!isConnected && (
+        <p className="message-pulse text-xs text-muted tracking-[0.2em] uppercase text-center select-none pointer-events-none mb-8">
+          Reveal the Unseen
+        </p>
+      )}
+
       <div ref={menuRef} className="relative shrink-0">
+        {/* Orbital decorations — only in disconnected state */}
+        {!isConnected && (
+          <>
+            <div className="arc-orbit" />
+            <div className="arc-orbit-2" />
+            <div className="pulse-ring" />
+            <div className="pulse-ring pulse-ring-delay" />
+          </>
+        )}
+
         <button
           onClick={handleButtonClick}
-          className="btn-primary glow-oracle w-16 h-16 rounded-full cursor-pointer overflow-hidden"
+          className={`btn-primary w-24 h-24 rounded-full cursor-pointer overflow-hidden relative z-10 ${isConnected ? 'glow-oracle' : 'glow-breathe'}`}
           aria-label={isConnected ? 'Wallet options' : 'Connect wallet'}
         >
-          <Image src="/logo.png" alt="" width={64} height={64} unoptimized loading='eager' />
+          <Image src="/logo.png" alt="" width={96} height={96} unoptimized loading='eager' />
         </button>
 
         {menuOpen && isConnected && (
