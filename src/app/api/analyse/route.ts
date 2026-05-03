@@ -1,7 +1,9 @@
 // POST /api/analyse
 //
 // Trusted server-side pipeline: fetches wallet positions from Zerion, transforms
-// them into a compact LLM-ready dataset, and returns it.
+// them into a compact LLM-ready dataset, calls OpenAI, and logs the structured
+// analysis result. The LLM output is not yet returned to the client — it is
+// logged on the server only until the UI rendering layer is ready.
 //
 // Abuse protection
 // ─────────────────
@@ -10,28 +12,41 @@
 //
 // Privacy
 // ───────
-// Wallet addresses are never logged in full. The Zerion key is server-only.
-// No raw Zerion payloads are returned to the caller.
+// Wallet addresses are never logged in full. The Zerion and OpenAI keys are
+// server-only. No raw Zerion payloads are forwarded to the client or the LLM.
 import { NextRequest } from 'next/server';
 import { fetchZerionPositions, buildPortfolioData } from '@/lib/zerion';
 import { buildLLMDataset } from '@/lib/portfolioAnalysis';
+import { generateAdoneyePortfolioAnalysis } from '@/lib/llm';
 import { checkCooldown, recordAnalysis, redactAddress } from '@/lib/cooldown';
+import type { AdoneyePortfolioAnalysis } from '@/types/llm';
 
 export const dynamic = 'force-dynamic';
+
+const VALID_PERIODS = new Set([7, 30, 90]);
 
 export async function POST(request: NextRequest): Promise<Response> {
   // ── Input validation ───────────────────────────────────────────────────────
   const body: unknown = await request.json().catch(() => null);
-  const address =
-    body !== null && typeof body === 'object' && 'address' in body
-      ? (body as { address: unknown }).address
-      : undefined;
 
+  if (body === null || typeof body !== 'object') {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  const b = body as Record<string, unknown>;
+
+  const address = b.address;
   if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
     return Response.json({ error: 'Invalid or missing address' }, { status: 400 });
   }
 
-  // ── Server-side cooldown check ────────────────────────────────────────────
+  // Accept 7, 30, or 90 day analysis windows. Defaults to 30 if absent or invalid.
+  const periodRaw = b.period;
+  const period: 7 | 30 | 90 =
+    typeof periodRaw === 'number' && VALID_PERIODS.has(periodRaw)
+      ? (periodRaw as 7 | 30 | 90)
+      : 30;
+
+  // ── Server-side cooldown check ─────────────────────────────────────────────
   // This check cannot be bypassed from the client — it runs in the trusted
   // server layer regardless of what the client sends.
   const cooldown = checkCooldown(address);
@@ -67,9 +82,26 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // ── Build dataset ──────────────────────────────────────────────────────────
   // All metrics are computed deterministically here.
-  // The LLM receives only the finished dataset — no raw Zerion data.
+  // The LLM receives only the finished dataset — no raw Zerion data, no wallet
+  // addresses, no provider-internal fields.
   const portfolio = buildPortfolioData(address, positions);
-  const dataset = buildLLMDataset(portfolio);
+  const dataset = buildLLMDataset(portfolio, period);
 
-  return Response.json(dataset);
+  // ── LLM analysis ──────────────────────────────────────────────────────────
+  // LLM failure must not break portfolio data delivery — analysis is null-safe.
+  // The result is logged server-side and returned to the client so the UI can
+  // render AI-authored card text. Raw Zerion payloads are never forwarded.
+  let analysis: AdoneyePortfolioAnalysis | null = null;
+  try {
+    analysis = await generateAdoneyePortfolioAnalysis(dataset);
+    console.log('[analyse] LLM portfolio analysis result:');
+    console.log(JSON.stringify(analysis, null, 2));
+  } catch (err) {
+    console.error(
+      `[analyse] LLM call failed for ${redactAddress(address)}:`,
+      (err as Error).message,
+    );
+  }
+
+  return Response.json({ dataset, analysis });
 }

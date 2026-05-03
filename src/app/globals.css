@@ -234,3 +234,46 @@ body {
 .message-pulse {
   animation: text-pulse 3.5s ease-in-out infinite;
 }
+
+/* ─── Analysis loading rings ────────────────────────────────────────────────── */
+/* Outer ring: sparse arc, clockwise — reuses orbit-cw keyframe */
+.analysis-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  border-top: 1.5px solid rgb(var(--primary-rgb) / 0.75);
+  border-right: 1.5px solid rgb(var(--primary-rgb) / 0.25);
+  animation: orbit-cw 2s linear infinite;
+}
+
+/* Inner ring: counter-clockwise, slightly dimmer */
+.analysis-ring-inner {
+  position: absolute;
+  inset: 10px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  border-bottom: 1px solid rgb(var(--primary-rgb) / 0.5);
+  animation: orbit-ccw 3s linear infinite;
+}
+
+/* ─── Analysis loading steps ────────────────────────────────────────────────── */
+@keyframes step-appear {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.analysis-step {
+  opacity: 0;
+  animation: step-appear 0.35s ease-out forwards;
+}
+
+/* Dot pulses orange when the step is active */
+@keyframes dot-pulse {
+  0%, 100% { background-color: rgb(var(--primary-rgb) / 0.35); box-shadow: none; }
+  50%       { background-color: rgb(var(--primary-rgb) / 0.9); box-shadow: 0 0 6px rgb(var(--primary-rgb) / 0.6); }
+}
+
+.analysis-step-dot {
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
