@@ -15,8 +15,8 @@
 // Wallet addresses are never logged in full. The Zerion and OpenAI keys are
 // server-only. No raw Zerion payloads are forwarded to the client or the LLM.
 import { NextRequest } from 'next/server';
-import { fetchZerionPositions, buildPortfolioData } from '@/lib/zerion';
-import { buildLLMDataset } from '@/lib/portfolioAnalysis';
+import { fetchZerionPositions, buildPortfolioData, fetchFungibleReturn, findFungibleId, CHAIN_SLUG_BY_NAME } from '@/lib/zerion';
+import { buildLLMDataset, getEligibleForReturns, getEligibleWithoutFungibleId } from '@/lib/portfolioAnalysis';
 import { generateAdoneyePortfolioAnalysis } from '@/lib/llm';
 import { checkCooldown, recordAnalysis, redactAddress } from '@/lib/cooldown';
 import type { AdoneyePortfolioAnalysis } from '@/types/llm';
@@ -81,11 +81,90 @@ export async function POST(request: NextRequest): Promise<Response> {
   recordAnalysis(address);
 
   // ── Build dataset ──────────────────────────────────────────────────────────
-  // All metrics are computed deterministically here.
-  // The LLM receives only the finished dataset — no raw Zerion data, no wallet
-  // addresses, no provider-internal fields.
   const portfolio = buildPortfolioData(address, positions);
-  const dataset = buildLLMDataset(portfolio, period);
+
+  // ── Resolve missing fungible IDs ───────────────────────────────────────────
+  // Zerion's positions endpoint sometimes omits the fungible relationship (or
+  // returns only a links entry with no data.id). For holdings that are otherwise
+  // eligible but lack a fungible ID, search the Zerion fungibles catalogue and
+  // patch the ID onto the holding in-place before the chart-fetch step.
+  const missingIdHoldings = getEligibleWithoutFungibleId(portfolio);
+  if (missingIdHoldings.length > 0) {
+    console.log(`[analyse] searching for fungible IDs for ${missingIdHoldings.length} position(s)`);
+    const searches = await Promise.allSettled(
+      missingIdHoldings.map(h => {
+        const chainSlug = CHAIN_SLUG_BY_NAME[h.chain] ?? h.chain.toLowerCase();
+        return findFungibleId(h.symbol, chainSlug, key)
+          .then(id => ({ holding: h, id }));
+      }),
+    );
+    for (const r of searches) {
+      if (r.status === 'fulfilled' && r.value.id) {
+        r.value.holding.fungibleId = r.value.id;
+        console.log(`[analyse] resolved fungible ID for ${r.value.holding.symbol}: ${r.value.id}`);
+      }
+    }
+  }
+
+  const eligibleHoldings = getEligibleForReturns(portfolio);
+
+  // ── Diagnostic: log fungible ID extraction results ─────────────────────────
+  const withId    = eligibleHoldings.filter(h => h.fungibleId !== null);
+  const withoutId = eligibleHoldings.filter(h => h.fungibleId === null);
+  console.log(
+    `[analyse] eligible: ${eligibleHoldings.length} total, ` +
+    `${withId.length} with fungibleId, ${withoutId.length} without. ` +
+    `IDs: ${withId.map(h => `${h.symbol}=${h.fungibleId}`).join(', ') || 'none'}`,
+  );
+
+  // Prefer ETH on Ethereum; fall back to WETH, then ETH on any chain
+  const ethInWallet =
+    eligibleHoldings.find(h => h.symbol === 'ETH'  && h.chain === 'Ethereum') ??
+    eligibleHoldings.find(h => h.symbol === 'WETH') ??
+    eligibleHoldings.find(h => h.symbol === 'ETH');
+
+  const wbtcInWallet =
+    eligibleHoldings.find(h => h.symbol === 'WBTC') ??
+    eligibleHoldings.find(h => h.symbol === 'CBBTC') ??
+    eligibleHoldings.find(h => h.symbol === 'BTCB');
+
+  // Resolve Zerion fungible IDs for benchmarks: wallet first, then search API
+  const [ethFungibleId, wbtcFungibleId] = await Promise.all([
+    ethInWallet?.fungibleId  != null ? Promise.resolve(ethInWallet.fungibleId)  : findFungibleId('ETH',  'ethereum', key, true),
+    wbtcInWallet?.fungibleId != null ? Promise.resolve(wbtcInWallet.fungibleId) : findFungibleId('WBTC', 'ethereum', key, false),
+  ]);
+
+  console.log(`[analyse] benchmark fungible IDs — ETH: ${ethFungibleId ?? 'null'}, WBTC: ${wbtcFungibleId ?? 'null'}`);
+
+  // Build the set of Zerion chart fetches (positions + benchmarks, deduplicated)
+  const toFetch = new Map<string, true>();
+  for (const h of eligibleHoldings) if (h.fungibleId) toFetch.set(h.fungibleId, true);
+  if (ethFungibleId)  toFetch.set(ethFungibleId,  true);
+  if (wbtcFungibleId) toFetch.set(wbtcFungibleId, true);
+
+  console.log(`[analyse] Zerion chart fetches: ${toFetch.size} (${[...toFetch.keys()].join(', ')})`);
+
+  const returnResults = await Promise.allSettled(
+    [...toFetch.keys()].map(id =>
+      fetchFungibleReturn(id, period, key).then(ret => ({ fungibleId: id, returnDecimal: ret })),
+    ),
+  );
+
+  const priceReturns = new Map<string, number>();
+  for (const r of returnResults) {
+    if (r.status === 'fulfilled' && r.value.returnDecimal !== null) {
+      priceReturns.set(r.value.fungibleId, r.value.returnDecimal);
+    }
+  }
+
+  const ethReturnDecimal = ethFungibleId ? priceReturns.get(ethFungibleId) ?? null : null;
+  const btcReturnDecimal = wbtcFungibleId ? priceReturns.get(wbtcFungibleId) ?? null : null;
+
+  const benchmarkRef = ethReturnDecimal !== null
+    ? { symbol: 'ETH', returnDecimal: ethReturnDecimal }
+    : null;
+
+  const dataset = buildLLMDataset(portfolio, period, priceReturns, benchmarkRef, btcReturnDecimal);
 
   // ── LLM analysis ──────────────────────────────────────────────────────────
   // LLM failure must not break portfolio data delivery — analysis is null-safe.

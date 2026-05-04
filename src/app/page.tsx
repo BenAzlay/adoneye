@@ -96,7 +96,7 @@ export default function Home() {
   } = usePortfolio();
   const {
     data: analyseData,
-    isLoading: analysisLoading,
+    isFetching: analysisLoading,
     error: analysisError,
     rerunAnalysis,
   } = useAnalysis();
@@ -147,7 +147,7 @@ export default function Home() {
 
   // Derived analysis state
   const showAnalysisLoading = isConnected && analysisLoading;
-  const showAnalysisCards = isConnected && !!analyseData;
+  const showAnalysisCards = isConnected && !!analyseData && !analysisLoading;
   const isCooldownError = analysisError instanceof AnalysisCooldownError;
   const isGenericError = !!analysisError && !isCooldownError;
 

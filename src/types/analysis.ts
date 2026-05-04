@@ -69,25 +69,27 @@ export interface LLMPortfolioAnalysisDataset {
   };
 
   // Portfolio driver data for the portfolio_drivers card.
-  // allocationPct is deterministic; return and contribution fields are null
-  // because historical price data is not yet integrated into this pipeline.
-  // The LLM must not invent return percentages — it must surface the limitation.
+  // returnPct and contributionPct are null when historical price data is unavailable.
   portfolioDrivers: {
-    returnDataAvailable: boolean; // false until price history integration is complete
+    returnDataAvailable: boolean;
+    // Primary EVM benchmark — ETH on Ethereum. Used for per-position opportunity cost.
+    benchmarkSymbol: string | null;
+    benchmarkReturnPct: number | null;
+    // BTC market reference via WBTC on Ethereum. Null when unavailable.
+    btcBenchmarkReturnPct: number | null;
     positions: Array<{
       symbol: string;
       chain: string;
       allocationPct: number;
-      returnPct: number | null;      // null: requires historical price data
-      contributionPct: number | null; // null: derived from returnPct, unavailable
+      returnPct: number | null;
+      contributionPct: number | null;   // allocationPct-weighted return contribution
+      opportunityCostUsd: number | null; // positive = underperformed benchmark
     }>;
   };
 
   // Non-stablecoin positions eligible for same-chain EVM benchmark comparison.
   // Native BTC is never used as a benchmark — only same-chain wrapped/canonical
   // tokens (WBTC, WETH, cbBTC, etc.) are valid benchmark references.
-  // Return data for benchmarks is not yet available; the limitation is declared
-  // here so the LLM acknowledges it instead of inventing values.
   benchmarkContext: {
     note: string;
     eligiblePositions: Array<{
@@ -96,6 +98,8 @@ export interface LLMPortfolioAnalysisDataset {
       chainId: number;
       valueUsd: number;
       allocationPct: number;
+      returnPct: number | null;          // null when historical data unavailable
+      opportunityCostUsd: number | null; // positive = underperformed benchmark; negative = outperformed
     }>;
   };
 

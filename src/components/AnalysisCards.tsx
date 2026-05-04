@@ -44,6 +44,7 @@ const TOOLTIP_STYLE = {
     fontSize: 11,
     color: '#F5F1E8',
   },
+  itemStyle: { color: '#F5F1E8' },
   cursor: { fill: 'rgba(247,147,26,0.06)' },
 };
 
@@ -110,7 +111,7 @@ function DonutChart({ data }: { data: { name: string; value: number }[] }) {
         </Pie>
         <Tooltip
           {...TOOLTIP_STYLE}
-          formatter={(v) => [`${(v as number).toFixed(1)}%`, '']}
+          formatter={(v, _key, props) => [`${(v as number).toFixed(1)}%`, props.payload.name]}
         />
       </PieChart>
     </ResponsiveContainer>

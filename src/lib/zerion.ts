@@ -22,6 +22,12 @@ export const ZERION_CHAINS: Record<string, { name: string; id: number }> = {
   celo:            { name: 'Celo',          id: 42220    },
 };
 
+// Reverse lookup: chain display name → Zerion slug (e.g. 'Arbitrum' → 'arbitrum').
+// Used to resolve fungible IDs for holdings whose positions response lacked the relationship.
+export const CHAIN_SLUG_BY_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(ZERION_CHAINS).map(([slug, { name }]) => [name, slug]),
+);
+
 // ── Raw Zerion response shapes ─────────────────────────────────────────────────
 // These types must not leak outside this module.
 
@@ -55,8 +61,105 @@ export interface ZerionPosition {
   };
   relationships: {
     chain: { data: { type: string; id: string } };
+    // fungible.data may be absent when only links are returned by Zerion
+    fungible?: {
+      data?: { type: string; id: string };
+      links?: { related: string };
+    };
   };
 }
+
+// ── Fungibles search types ─────────────────────────────────────────────────────
+// Used to look up fungible IDs for ETH and WBTC when they are not in the wallet.
+
+interface ZerionFungibleItem {
+  id: string;
+  attributes: {
+    name: string;
+    symbol: string;
+    implementations?: Array<{ chain_id: string; address: string | null }>;
+  };
+}
+
+interface ZerionFungibleListResponse {
+  data?: ZerionFungibleItem[];
+}
+
+// Module-level cache so repeated analyses in the same server process avoid
+// unnecessary search API calls. Key: `${symbol.lower}-${chainSlug}`.
+const fungibleIdCache = new Map<string, string>();
+
+// Searches the Zerion fungibles catalogue for an asset by symbol and chain.
+// nativeOnly = true restricts to native tokens (address === null) — use this
+// to find native ETH rather than WETH when searching for "ETH".
+// Returns the Zerion fungible ID, or null on failure / no match.
+export async function findFungibleId(
+  symbol: string,
+  chainSlug: string,
+  key: string,
+  nativeOnly = false,
+): Promise<string | null> {
+  const cacheKey = `${symbol.toLowerCase()}-${chainSlug}${nativeOnly ? '-native' : ''}`;
+  const cached = fungibleIdCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const auth = Buffer.from(`${key}:`).toString('base64');
+  try {
+    const url = `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(symbol)}&currency=usd`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' } },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      console.warn(`[zerion] fungibles search failed ${res.status} for "${symbol}": ${text.slice(0, 120)}`);
+      return null;
+    }
+
+    const body: ZerionFungibleListResponse = await res.json().catch(() => ({}));
+    console.log(`[zerion] fungibles search "${symbol}": ${body.data?.length ?? 0} results, symbols=[${body.data?.slice(0,5).map(f => f.attributes.symbol).join(',')}]`);
+
+    const match = body.data?.find(f => {
+      if (f.attributes.symbol.toUpperCase() !== symbol.toUpperCase()) return false;
+      return f.attributes.implementations?.some(
+        i => i.chain_id === chainSlug && (!nativeOnly || i.address === null),
+      );
+    });
+
+    const id = match?.id ?? null;
+    console.log(`[zerion] fungibles search "${symbol}" resolved to: ${id ?? 'null'}`);
+    if (id) fungibleIdCache.set(cacheKey, id);
+    return id;
+  } catch (err) {
+    console.warn(`[zerion] fungibles search threw for "${symbol}":`, (err as Error).message);
+    return null;
+  }
+}
+
+// ── Chart types ────────────────────────────────────────────────────────────────
+// Only the fields we use from /v1/fungibles/{id}/charts/
+
+interface ZerionChartResponse {
+  data?: {
+    attributes?: {
+      stats?: {
+        first: number;
+        last: number;
+        min: number;
+        max: number;
+        change_abs: number;
+        change: number | null;
+      };
+    };
+  };
+}
+
+// Zerion chart period path segments.
+// The period is part of the URL path: /v1/fungibles/{id}/charts/{period}
+const ZERION_CHART_PERIOD: Record<7 | 30 | 90, string> = {
+  7:  'week',
+  30: 'month',
+  90: '3months',
+};
 
 // ── Fetch ──────────────────────────────────────────────────────────────────────
 
@@ -84,7 +187,49 @@ export async function fetchZerionPositions(
     url = body.links?.next ?? null;
   }
 
+  // Log the first position's relationships so we can verify fungibleId extraction.
+  if (positions[0]) {
+    console.log('[zerion] first position relationships:', JSON.stringify(positions[0].relationships));
+  }
+
   return positions;
+}
+
+// ── Chart fetch ────────────────────────────────────────────────────────────────
+
+// Returns the period return as a decimal (0.1 = 10% gain, -0.05 = -5% loss),
+// or null if the chart is unavailable or the price data is missing.
+export async function fetchFungibleReturn(
+  fungibleId: string,
+  period: 7 | 30 | 90,
+  key: string,
+): Promise<number | null> {
+  const auth = Buffer.from(`${key}:`).toString('base64');
+  const periodParam = ZERION_CHART_PERIOD[period];
+
+  try {
+    const url = `https://api.zerion.io/v1/fungibles/${fungibleId}/charts/${periodParam}?currency=usd`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      console.warn(`[zerion] chart fetch failed ${res.status} for ${fungibleId} period=${periodParam}: ${text.slice(0, 120)}`);
+      return null;
+    }
+
+    const body: ZerionChartResponse = await res.json().catch(() => ({}));
+    const stats = body.data?.attributes?.stats;
+    if (!stats || stats.first <= 0) {
+      console.warn(`[zerion] chart response missing stats for ${fungibleId}:`, JSON.stringify(body).slice(0, 200));
+      return null;
+    }
+
+    return (stats.last - stats.first) / stats.first;
+  } catch (err) {
+    console.warn(`[zerion] chart fetch threw for ${fungibleId}:`, (err as Error).message);
+    return null;
+  }
 }
 
 // ── Normalisation ──────────────────────────────────────────────────────────────
@@ -103,6 +248,11 @@ export function toTokenHolding(pos: ZerionPosition): TokenHolding | null {
     symbol:          a.fungible_info.symbol,
     name:            a.fungible_info.name,
     contractAddress: impl?.address ?? null,
+    // Extract fungible ID from either data.id (preferred) or the links.related URL.
+    // Some Zerion API versions return only links without the data object.
+    fungibleId:
+      pos.relationships.fungible?.data?.id ??
+      (pos.relationships.fungible?.links?.related?.match(/\/fungibles\/([^/?]+)/)?.[1] ?? null),
     balance:         a.quantity.numeric,
     balanceRaw:      a.quantity.int,
     decimals:        a.quantity.decimals,

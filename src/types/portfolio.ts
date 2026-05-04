@@ -4,6 +4,7 @@ export interface TokenHolding {
   symbol: string;
   name: string;
   contractAddress: string | null; // null = native token
+  fungibleId: string | null;      // Zerion fungible ID, used for historical chart lookups
   balance: string;     // human-readable, e.g. "1.234567"
   balanceRaw: string;  // decimal string, avoids BigInt serialization issues
   decimals: number;
