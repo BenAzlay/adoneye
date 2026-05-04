@@ -105,7 +105,13 @@ export async function findFungibleId(
 
   const auth = Buffer.from(`${key}:`).toString('base64');
   try {
-    const url = `https://api.zerion.io/v1/fungibles/?filter[search_query]=${encodeURIComponent(symbol)}&currency=usd`;
+    // filter[implementation_chain_id] scopes results to the target chain so that
+    // the symbol-only fallback below is safe — wrong-chain tokens are excluded.
+    const url =
+      `https://api.zerion.io/v1/fungibles/` +
+      `?filter[search_query]=${encodeURIComponent(symbol)}` +
+      `&filter[implementation_chain_id]=${chainSlug}` +
+      `&currency=usd`;
     const res = await fetch(url, {
       headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' } },
     );
@@ -118,12 +124,24 @@ export async function findFungibleId(
     const body: ZerionFungibleListResponse = await res.json().catch(() => ({}));
     console.log(`[zerion] fungibles search "${symbol}": ${body.data?.length ?? 0} results, symbols=[${body.data?.slice(0,5).map(f => f.attributes.symbol).join(',')}]`);
 
-    const match = body.data?.find(f => {
+    // Strict match: symbol + explicit implementation on the target chain.
+    let match = body.data?.find(f => {
       if (f.attributes.symbol.toUpperCase() !== symbol.toUpperCase()) return false;
       return f.attributes.implementations?.some(
         i => i.chain_id === chainSlug && (!nativeOnly || i.address === null),
       );
     });
+
+    // Fallback: Zerion sometimes omits the implementations array from search results.
+    // When it does, the strict check above always returns undefined. Fall back to a
+    // plain symbol match — safe because the URL already filters by chain.
+    // Skipped for nativeOnly searches (e.g. ETH benchmark) to avoid matching WETH.
+    if (!match && !nativeOnly) {
+      match = body.data?.find(
+        f => f.attributes.symbol.toUpperCase() === symbol.toUpperCase(),
+      );
+      if (match) console.log(`[zerion] "${symbol}": using symbol-only fallback (no implementations in response)`);
+    }
 
     const id = match?.id ?? null;
     console.log(`[zerion] fungibles search "${symbol}" resolved to: ${id ?? 'null'}`);

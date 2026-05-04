@@ -156,6 +156,10 @@ function cardFor(analysis: AdoneyePortfolioAnalysis | null, type: string): Insig
   return analysis?.cards.find(c => c.type === type);
 }
 
+function fmt(pct: number, sign = false): string {
+  return `${sign && pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+}
+
 interface Props {
   dataset: LLMPortfolioAnalysisDataset;
   analysis: AdoneyePortfolioAnalysis | null;
@@ -163,17 +167,47 @@ interface Props {
 
 // ── Main export ────────────────────────────────────────────────────────────
 export function AnalysisCards({ dataset, analysis }: Props) {
+  // True when at least one eligible position is missing return data.
+  // In this case the LLM tends to generate error-focused titles and metrics
+  // ("Unknown ENS Returns", "Unavailable") — we override with deterministic content.
+  const hasPartialReturns =
+    !dataset.portfolioDrivers.returnDataAvailable ||
+    dataset.benchmarkContext.eligiblePositions.some(p => p.returnPct === null);
+
   // ── Missed Opportunity ─────────────────────────────────────────────────
   const moCard = cardFor(analysis, 'missed_opportunity');
   const moData = dataset.benchmarkContext.eligiblePositions
     .slice(0, 5)
     .map(p => ({ name: p.symbol, value: p.allocationPct }));
 
+  // Deterministic metrics: benchmark first, then per-position allocation + return
+  // (return omitted rather than labelled "Unavailable" when null).
+  const moFallbackMetrics = [
+    ...(dataset.portfolioDrivers.benchmarkReturnPct !== null ? [{
+      label: `${dataset.portfolioDrivers.benchmarkSymbol ?? 'ETH'} Benchmark`,
+      value: fmt(dataset.portfolioDrivers.benchmarkReturnPct, true),
+      highlight: true,
+    }] : []),
+    ...dataset.benchmarkContext.eligiblePositions.slice(0, 4).flatMap(p => [
+      { label: `${p.symbol} Allocation`, value: fmt(p.allocationPct) },
+      ...(p.returnPct !== null ? [{ label: `${p.symbol} Return`, value: fmt(p.returnPct, true) }] : []),
+      ...(p.opportunityCostUsd !== null && p.opportunityCostUsd > 0
+        ? [{ label: `${p.symbol} Opp. Cost`, value: `~$${Math.round(p.opportunityCostUsd).toLocaleString()}` }]
+        : []),
+    ]),
+  ].slice(0, 6);
+
   // ── Portfolio Drivers ──────────────────────────────────────────────────
   const pdCard = cardFor(analysis, 'portfolio_drivers');
   const pdData = dataset.portfolioDrivers.positions
     .slice(0, 5)
     .map(p => ({ name: p.symbol, value: p.allocationPct }));
+
+  const pdFallbackMetrics = dataset.portfolioDrivers.positions.slice(0, 4).flatMap(p => [
+    { label: `${p.symbol} Allocation`, value: fmt(p.allocationPct) },
+    ...(p.returnPct !== null ? [{ label: `${p.symbol} Return`, value: fmt(p.returnPct, true) }] : []),
+    ...(p.contributionPct !== null ? [{ label: `${p.symbol} Contribution`, value: `${fmt(p.contributionPct, true)}pp` }] : []),
+  ]).slice(0, 6);
 
   // ── Concentration Risk ─────────────────────────────────────────────────
   const crCard = cardFor(analysis, 'concentration_risk');
@@ -194,11 +228,11 @@ export function AnalysisCards({ dataset, analysis }: Props) {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       {/* 1 — Missed Opportunity */}
       <InsightCard
-        title={moCard?.title ?? 'Missed Opportunity'}
-        subtitle={moCard?.subtitle ?? 'Same-chain benchmark comparison'}
+        title={hasPartialReturns ? 'Missed Opportunity' : (moCard?.title ?? 'Missed Opportunity')}
+        subtitle={hasPartialReturns ? `${dataset.period}d benchmark comparison` : (moCard?.subtitle ?? 'Same-chain benchmark comparison')}
         summary={moCard?.summary}
         severity={moCard?.severity}
-        metrics={moCard?.metrics}
+        metrics={hasPartialReturns ? moFallbackMetrics : (moCard?.metrics ?? moFallbackMetrics)}
         assumptions={moCard?.assumptions}
       >
         {moData.length > 0 && <HBarChart data={moData} />}
@@ -206,11 +240,11 @@ export function AnalysisCards({ dataset, analysis }: Props) {
 
       {/* 2 — Portfolio Drivers */}
       <InsightCard
-        title={pdCard?.title ?? 'Portfolio Drivers'}
-        subtitle={pdCard?.subtitle ?? 'Position weight by USD value'}
+        title={hasPartialReturns ? 'Portfolio Drivers' : (pdCard?.title ?? 'Portfolio Drivers')}
+        subtitle={hasPartialReturns ? 'Allocation weights by USD value' : (pdCard?.subtitle ?? 'Position weight by USD value')}
         summary={pdCard?.summary}
         severity={pdCard?.severity}
-        metrics={pdCard?.metrics}
+        metrics={hasPartialReturns ? pdFallbackMetrics : (pdCard?.metrics ?? pdFallbackMetrics)}
         assumptions={pdCard?.assumptions}
       >
         {pdData.length > 0 && <HBarChart data={pdData} />}
