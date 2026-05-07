@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { SubscribeButton } from '@/components/SubscribeButton';
 
 function fmtUsd(v: number | null): string {
   if (v === null) return '—';
@@ -115,6 +116,10 @@ export function WalletModal({
                 ? `Cooldown (${countdown})`
                 : 'Run new analysis'}
           </button>
+
+          <div className="h-px bg-border my-0.5" />
+
+          <SubscribeButton />
 
           <button
             onClick={onDisconnect}
