@@ -9,7 +9,6 @@ import {
 import {
   metaMaskWallet,
   walletConnectWallet,
-  coinbaseWallet,
   phantomWallet,
   trustWallet,
   ledgerWallet,
@@ -31,7 +30,6 @@ const connectors = connectorsForWallets(
       wallets: [
         metaMaskWallet,
         walletConnectWallet,
-        coinbaseWallet,
         phantomWallet,
         trustWallet,
         ledgerWallet,
