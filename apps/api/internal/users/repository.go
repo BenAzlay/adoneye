@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,15 +44,21 @@ func (r *Repository) CreateOrGetUserByEmail(ctx context.Context, email string) (
 }
 
 // UpdateUserStripeCustomerID sets the Stripe customer ID for a user.
-// Called after webhook confirmation, not from checkout directly.
 func (r *Repository) UpdateUserStripeCustomerID(ctx context.Context, userID, stripeCustomerID string) error {
-	const q = `
-		UPDATE users SET stripe_customer_id = $1, updated_at = NOW()
-		WHERE id = $2
-	`
+	const q = `UPDATE users SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2`
 	_, err := r.pool.Exec(ctx, q, stripeCustomerID, userID)
 	if err != nil {
 		return fmt.Errorf("users: UpdateUserStripeCustomerID: %w", err)
+	}
+	return nil
+}
+
+// UpdateUserStripeCustomerIDTx is the transactional variant used inside webhook processing.
+func (r *Repository) UpdateUserStripeCustomerIDTx(ctx context.Context, tx pgx.Tx, userID, stripeCustomerID string) error {
+	const q = `UPDATE users SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2`
+	_, err := tx.Exec(ctx, q, stripeCustomerID, userID)
+	if err != nil {
+		return fmt.Errorf("users: UpdateUserStripeCustomerIDTx: %w", err)
 	}
 	return nil
 }

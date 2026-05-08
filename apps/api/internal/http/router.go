@@ -8,16 +8,19 @@ import (
 
 	"adoneye/api/internal/billing"
 	"adoneye/api/internal/health"
+	"adoneye/api/internal/subscriptions"
 	"adoneye/api/internal/users"
 )
 
 func NewRouter(pool *pgxpool.Pool) http.Handler {
 	userRepo := users.NewRepository(pool)
+	subRepo := subscriptions.NewRepository(pool)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", health.HandleHealth)
 	mux.HandleFunc("/health/db", health.HandleHealthDB(pool))
 	mux.HandleFunc("/billing/checkout", billing.HandleCheckout(userRepo))
+	mux.HandleFunc("/billing/webhook", billing.HandleWebhook(pool, userRepo, subRepo))
 
 	origin := os.Getenv("APP_URL")
 	if origin == "" {
