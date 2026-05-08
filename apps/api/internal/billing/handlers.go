@@ -8,78 +8,94 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v85"
 	stripeClient "github.com/stripe/stripe-go/v85/client"
+
+	"adoneye/api/internal/users"
 )
 
 type checkoutRequest struct {
-	UserID string `json:"userId"`
-	Email  string `json:"email"`
+	Email string `json:"email"`
 }
 
 type checkoutResponse struct {
 	URL string `json:"url"`
 }
 
-func HandleCheckout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// HandleCheckout creates or retrieves the user by email, then initiates a
+// Stripe Checkout session. The internal user UUID is embedded in Stripe
+// metadata so webhooks can later associate subscription events with our user.
+// Subscription state is NOT persisted here — that is the webhook's responsibility.
+func HandleCheckout(repo *users.Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	secretKey := os.Getenv("STRIPE_SECRET_KEY")
-	priceID := os.Getenv("STRIPE_WEEKLY_ANALYSIS_PRICE_ID")
-	appURL := os.Getenv("APP_URL")
+		secretKey := os.Getenv("STRIPE_SECRET_KEY")
+		priceID := os.Getenv("STRIPE_WEEKLY_ANALYSIS_PRICE_ID")
+		appURL := os.Getenv("APP_URL")
 
-	if secretKey == "" || priceID == "" || appURL == "" {
-		log.Println("billing: missing required env vars (STRIPE_SECRET_KEY, STRIPE_WEEKLY_ANALYSIS_PRICE_ID, APP_URL)")
-		writeError(w, "billing not configured", http.StatusInternalServerError)
-		return
-	}
+		if secretKey == "" || priceID == "" || appURL == "" {
+			log.Println("billing: missing required env vars (STRIPE_SECRET_KEY, STRIPE_WEEKLY_ANALYSIS_PRICE_ID, APP_URL)")
+			writeError(w, "billing not configured", http.StatusInternalServerError)
+			return
+		}
 
-	var req checkoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
+		var req checkoutRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
 
-	if req.UserID == "" || req.Email == "" {
-		writeError(w, "userId and email are required", http.StatusBadRequest)
-		return
-	}
+		if req.Email == "" {
+			writeError(w, "email is required", http.StatusBadRequest)
+			return
+		}
 
-	sc := &stripeClient.API{}
-	sc.Init(secretKey, nil)
+		user, err := repo.CreateOrGetUserByEmail(r.Context(), req.Email)
+		if err != nil {
+			log.Printf("billing: failed to resolve user: %v", err)
+			writeError(w, "could not resolve user", http.StatusInternalServerError)
+			return
+		}
 
-	metadata := map[string]string{
-		"user_id": req.UserID,
-		"plan":    "weekly_1_wallet",
-	}
+		sc := &stripeClient.API{}
+		sc.Init(secretKey, nil)
 
-	params := &stripe.CheckoutSessionParams{
-		CustomerEmail: stripe.String(req.Email),
-		Mode:          stripe.String(string(stripe.CheckoutSessionModeSubscription)),
-		LineItems: []*stripe.CheckoutSessionLineItemParams{
-			{
-				Price:    stripe.String(priceID),
-				Quantity: stripe.Int64(1),
+		metadata := map[string]string{
+			"user_id": user.ID,
+			"plan":    "weekly_1_wallet",
+		}
+
+		params := &stripe.CheckoutSessionParams{
+			CustomerEmail: stripe.String(req.Email),
+			Mode:          stripe.String(string(stripe.CheckoutSessionModeSubscription)),
+			LineItems: []*stripe.CheckoutSessionLineItemParams{
+				{
+					Price:    stripe.String(priceID),
+					Quantity: stripe.Int64(1),
+				},
 			},
-		},
-		SuccessURL: stripe.String(appURL + "/billing/success?session_id={CHECKOUT_SESSION_ID}"),
-		CancelURL:  stripe.String(appURL + "/billing/cancel"),
-		Metadata:   metadata,
-		SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{
-			Metadata: metadata,
-		},
-	}
+			SuccessURL: stripe.String(appURL + "/billing/success?session_id={CHECKOUT_SESSION_ID}"),
+			CancelURL:  stripe.String(appURL + "/billing/cancel"),
+			Metadata:   metadata,
+			SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{
+				Metadata: metadata,
+			},
+		}
 
-	s, err := sc.CheckoutSessions.New(params)
-	if err != nil {
-		log.Printf("billing: checkout session error: %v", err)
-		writeError(w, "could not create checkout session", http.StatusInternalServerError)
-		return
-	}
+		s, err := sc.CheckoutSessions.New(params)
+		if err != nil {
+			log.Printf("billing: checkout session error: %v", err)
+			writeError(w, "could not create checkout session", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(checkoutResponse{URL: s.URL})
+		log.Printf("billing: checkout session created for user %s", user.ID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(checkoutResponse{URL: s.URL})
+	}
 }
 
 func writeError(w http.ResponseWriter, msg string, status int) {

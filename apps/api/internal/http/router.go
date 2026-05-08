@@ -4,14 +4,20 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"adoneye/api/internal/billing"
 	"adoneye/api/internal/health"
+	"adoneye/api/internal/users"
 )
 
-func NewRouter() http.Handler {
+func NewRouter(pool *pgxpool.Pool) http.Handler {
+	userRepo := users.NewRepository(pool)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", health.HandleHealth)
-	mux.HandleFunc("/billing/checkout", billing.HandleCheckout)
+	mux.HandleFunc("/health/db", health.HandleHealthDB(pool))
+	mux.HandleFunc("/billing/checkout", billing.HandleCheckout(userRepo))
 
 	origin := os.Getenv("APP_URL")
 	if origin == "" {
